@@ -3,16 +3,24 @@ import * as Jimp from 'jimp';
 
 const SUBMARINES_PER_PLAYER = 5;
 const SUBMARINE_SPOT_RADIUS = 10;
-const SUBMARINE_VELOCITY = 5;
+const SUBMARINE_RANGE = 5;
 const BOUY_SPOT_RADIUS = 25;
 const BLAST_RADIUS = 10;
 
 class Coordinate {
     constructor(public x: number, public y: number) {
     }
+
+    eq(other: Coordinate): boolean {
+        return this.x === other.x && this.y === other.y;
+    }
+
+    distance(other: Coordinate): number {
+        return Math.sqrt(Math.pow(other.x - this.x, 2) + Math.pow(other.y - this.y, 2));
+    }
 }
 
-enum BlockType {
+enum TileType {
     WATER,
     LAND,
     PLAYER1_SPAWN,
@@ -26,7 +34,7 @@ class Map {
         const width = image.bitmap.width;
         const height = image.bitmap.height;
 
-        const data: BlockType[] = [];
+        const data: TileType[] = [];
         image.scan(0, 0, width, height,
             (x, y, idx) => {
                 const red = image.bitmap.data[idx + 0];
@@ -34,13 +42,13 @@ class Map {
                 const blue = image.bitmap.data[idx + 2];
 
                 if (red === 0xFF && green === 0 && blue === 0) {
-                    data.push(BlockType.PLAYER1_SPAWN);
+                    data.push(TileType.PLAYER1_SPAWN);
                 } else if (red === 0 && green === 0 && blue === 0xFF) {
-                    data.push(BlockType.PLAYER2_SPAWN);
+                    data.push(TileType.PLAYER2_SPAWN);
                 } else if (red === 0xFF && green === 0xFF && blue === 0xFF) {
-                    data.push(BlockType.LAND);
+                    data.push(TileType.LAND);
                 } else {
-                    data.push(BlockType.WATER);
+                    data.push(TileType.WATER);
                 }
             });
 
@@ -48,10 +56,14 @@ class Map {
     }
 
     private constructor(
-        public data: BlockType[],
+        public data: TileType[],
         public width: number,
         public height: number,
     ) { }
+
+    getTileType(position: Coordinate): TileType {
+        return this.data[this.width*position.y + position.x];
+    }
 }
 
 interface Event {
@@ -83,10 +95,20 @@ class Submarine {
     ) { }
 }
 
+class Bouy {
+    constructor(
+        public id: number,
+        public owner: Player,
+        public position: Coordinate,
+    ) { }
+}
+
 class Game {
     public id: string;
     public players: Player[] = [];
     public submarines: Submarine[] = [];
+    public bouys: Bouy[] = [];
+    public currentTurn: Player | null = null;
 
     constructor(public map: Map) {
         this.id = new Array(10)
@@ -96,6 +118,10 @@ class Game {
     }
 
     initialize() {
+        // TODO: create submarines for all players
+        // TODO: randomize who gets to turn and assign turn
+
+        this.sendStateToClients();
     }
 
     findSubmarine(id: number): Submarine | null {
@@ -103,18 +129,83 @@ class Game {
     }
 
     placeBouy(player: Player, position: Coordinate) {
+        if (this.map.getTileType(position) === TileType.LAND) {
+            player.sendError('cannot_place_bouy_on_land');
+            return;
+        }
+
+        if (this.bouys.filter((bouy) => bouy.position.eq(position)).length > 0) {
+            player.sendError('tile_already_used_for_bouy');
+            return;
+        }
+
+        this.bouys.push(new Bouy(this.bouys.length + 1, player, position));
+
+        this.nextTurn();
+        this.sendStateToClients();
     }
 
     dropDepthCharge(player: Player, position: Coordinate) {
+        if (this.map.getTileType(position) === TileType.LAND) {
+            player.sendError('cannot_drop_depth_charge_on_land');
+            return;
+        }
+
+        const affectedSubmarines = this.submarines.filter((submarine) => {
+            return submarine.position.distance(position) <= BLAST_RADIUS;
+        });
+
+        this.submarines = this.submarines.filter((submarine) => {
+            return submarine.position.distance(position) > BLAST_RADIUS;
+        });
+
+        this.nextTurn();
+        this.sendStateToClients();
     }
 
-    moveSubmarine(submarine: Submarine, position: Coordinate) {
+    moveSubmarine(submarine: Submarine, target: Coordinate) {
+        const player = submarine.owner;
+        if (this.map.getTileType(target) === TileType.LAND) {
+            player.sendError('cannot_move_submarine_onto_land');
+            return;
+        }
+        if (submarine.position.distance(target) > SUBMARINE_RANGE) {
+            player.sendError('cannot_move_submarine_that_far');
+            return;
+        }
+        if (this.submarines.filter((submarine) => submarine.position.eq(target)).length > 0) {
+            player.sendError('cannot_move_to_occupied_tile');
+            return;
+        }
+
+        submarine.position = target;
+
+        this.nextTurn();
+        this.sendStateToClients();
     }
 
     renderMapForPlayer(player: Player) {
+        // TODO: implement
+    }
+
+    nextTurn() {
+        if (!this.currentTurn) {
+            console.log("Game.nextTurn() called without a player having the turn.");
+            return;
+        }
+
+        const currentIndex = this.players.indexOf(this.currentTurn);
+        if (currentIndex === -1) {
+            console.log("Game.nextTurn() could not find the player currently holding the turn in the list of players.");
+            return;
+        }
+
+        const nextIndex = (currentIndex + 1) % this.players.length;
+        this.currentTurn = this.players[nextIndex];
     }
 
     sendStateToClients() {
+        // TODO: implement
     }
 }
 
