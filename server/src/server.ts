@@ -2,10 +2,17 @@ import * as WebSocket from 'ws';
 import * as Jimp from 'jimp';
 
 const SUBMARINES_PER_PLAYER = 5;
-const SUBMARINE_SPOT_RADIUS = 10;
-const SUBMARINE_RANGE = 5;
-const BOUY_SPOT_RADIUS = 25;
-const BLAST_RADIUS = 10;
+const SUBMARINE_SPOT_RADIUS = 15;
+const SUBMARINE_RANGE = 10;
+const BOUY_SPOT_RADIUS = 15;
+const BLAST_RADIUS = 5;
+
+function randomString(length: number): string {
+    return new Array(length)
+        .fill(0)
+        .map((x, i) => String.fromCharCode(97 + (26*Math.random())|0))
+        .join("");
+}
 
 function shuffle(a: any[]): any[] {
     var j, x, i;
@@ -132,6 +139,7 @@ interface ClientTile {
     x: number;
     t: string;
     p?: number;
+    id?: number;
 }
 
 class Game {
@@ -142,10 +150,11 @@ class Game {
     public currentTurn: Player | null = null;
 
     constructor(public map: Map) {
-        this.id = new Array(10)
-            .fill(0)
-            .map((x, i) => String.fromCharCode(97 + (26*Math.random())|0))
-            .join("");
+        this.id = randomString(10);
+    }
+
+    info(message: string) {
+        console.log("[Game " + this.id + "] " + message);
     }
 
     initialize() {
@@ -173,7 +182,7 @@ class Game {
                 }
 
                 this.submarines.push(new Submarine(
-                    submarineId,
+                    submarineId++,
                     player,
                     position,
                 ));
@@ -182,7 +191,20 @@ class Game {
             playerIdx++;
         }
 
-        this.currentTurn = this.players[(Math.random()*(this.players.length-1))|0];
+        if (Math.random() > 0.5) {
+            this.currentTurn = this.players[0];
+        } else {
+            this.currentTurn = this.players[1];
+        }
+
+        for (const player of this.players) {
+            player.sendEvent({
+                eventType: 'game_start',
+                firstPlayer: this.currentTurn.id,
+            });
+        }
+
+        this.info("Game started. First player is " + this.currentTurn.id);
 
         this.sendMapToClients();
         this.sendStateToClients();
@@ -285,6 +307,7 @@ class Game {
                             x,
                             t: 'submarine',
                             p: submarine.owner.id,
+                            id: submarine.id,
                         });
                     }
                 } else if (bouy) {
@@ -316,6 +339,8 @@ class Game {
 
         const nextIndex = (currentIndex + 1) % this.players.length;
         this.currentTurn = this.players[nextIndex];
+
+        this.info("New turn. Current player is " + this.currentTurn.id);
     }
 
     sendMapToClients() {
@@ -350,6 +375,7 @@ class Game {
         for (const player of this.players) {
             player.sendEvent({
                 eventType: 'state_update',
+                currentPlayer: this.currentTurn ? this.currentTurn.id : 0,
                 map: this.renderMapForPlayer(player),
             });
         }
@@ -400,66 +426,94 @@ async function runGame() {
         const player = new Player(ws, ++playerSeq);
         players.push(player);
 
+        console.log("[Player " + player.id + "] Connected");
+
+        player.sendEvent({
+            eventType: 'connected',
+            playerId: player.id,
+        });
+
         ws.on('message', function(message: string) {
             const command : Command = JSON.parse(message);
 
+            console.log("[Player " + player.id + "] " + message);
+
             // TODO: chat support
 
-            if (command.commandType === 'gameNew') {
-                const game = new Game(map);
-                game.players.push(player);
-                games.push(game);
+            try {
+                if (command.commandType === 'gameNew') {
+                    const game = new Game(map);
+                    game.players.push(player);
+                    games.push(game);
 
-                player.game = game;
+                    player.game = game;
 
-                player.sendEvent({
-                    eventType: 'game_created',
-                    gameId: game.id,
-                });
-            } else if (command.commandType === 'gameJoin') {
-                const game = games.filter((game) => game.id === command.gameId).pop();
-                if (!game) {
-                    player.sendError('game_not_found');
-                    return;
-                }
+                    player.sendEvent({
+                        eventType: 'game_created',
+                        gameId: game.id,
+                    });
+                } else if (command.commandType === 'gameJoin') {
+                    const game = games.filter((game) => game.id === command.gameId).pop();
+                    if (!game) {
+                        player.sendError('game_not_found');
+                        return;
+                    }
 
-                player.game = game;
+                    // stop people from joining ongoing games
+                    if (game.players.length >= 2) {
+                        player.sendError('game_full');
+                        return;
+                    }
 
-                game.players.push(player);
-                game.initialize();
-            } else if (command.commandType === 'bouy') {
-                if (!player.game) {
-                    player.sendError('not_in_game');
-                    return;
-                }
-                player.game.placeBouy(player, command.position);
-            } else if (command.commandType === 'depthCharge') {
-                if (!player.game) {
-                    player.sendError('not_in_game');
-                    return;
-                }
-                player.game.dropDepthCharge(player, command.position);
-            } else if (command.commandType === 'move') {
-                if (!player.game) {
-                    player.sendError('not_in_game');
-                    return;
-                }
+                    player.game = game;
 
-                const game = player.game;
-                const submarine = game.findSubmarine(command.submarineId);
-                if (!submarine) {
-                    player.sendError('submarine_not_found');
-                    return;
-                }
-                if (submarine.owner !== player) {
-                    player.sendError('not_your_submarine');
-                    return;
-                }
+                    game.players.push(player);
+                    game.initialize();
+                } else if (command.commandType === 'bouy') {
+                    if (!player.game) {
+                        player.sendError('not_in_game');
+                        return;
+                    }
 
-                game.moveSubmarine(submarine, command.position);
+                    (command.position as any).__proto__ = Coordinate.prototype;
+                    player.game.placeBouy(player, command.position);
+                } else if (command.commandType === 'depthCharge') {
+                    if (!player.game) {
+                        player.sendError('not_in_game');
+                        return;
+                    }
+
+                    (command.position as any).__proto__ = Coordinate.prototype;
+                    player.game.dropDepthCharge(player, command.position);
+                } else if (command.commandType === 'move') {
+                    if (!player.game) {
+                        player.sendError('not_in_game');
+                        return;
+                    }
+
+                    const game = player.game;
+                    const submarine = game.findSubmarine(command.submarineId);
+                    if (!submarine) {
+                        player.sendError('submarine_not_found');
+                        return;
+                    }
+                    if (submarine.owner.id !== player.id) {
+                        player.sendError('not_your_submarine');
+                        return;
+                    }
+
+                    (command.position as any).__proto__ = Coordinate.prototype;
+                    game.moveSubmarine(submarine, command.position);
+                } else {
+                    console.log("Unknown command: " + message);
+                }
+            } catch (e) {
+                console.log(e);
             }
         });
     });
+
+    console.log("Server started!");
 }
 
 runGame();
