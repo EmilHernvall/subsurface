@@ -7,6 +7,17 @@ const SUBMARINE_RANGE = 5;
 const BOUY_SPOT_RADIUS = 25;
 const BLAST_RADIUS = 10;
 
+function shuffle(a: any[]): any[] {
+    var j, x, i;
+    for (i = a.length - 1; i > 0; i--) {
+        j = Math.floor(Math.random() * (i + 1));
+        x = a[i];
+        a[i] = a[j];
+        a[j] = x;
+    }
+    return a;
+}
+
 class Coordinate {
     constructor(public x: number, public y: number) {
     }
@@ -64,6 +75,20 @@ class Map {
     getTileType(position: Coordinate): TileType {
         return this.data[this.width*position.y + position.x];
     }
+
+    getTilesOfType(tileType: TileType): Coordinate[] {
+        const result: Coordinate[] = [];
+        for (let x = 0; x < this.width; x++) {
+            for (let y = 0; y < this.width; y++) {
+                const position = new Coordinate(x, y);
+                if (this.getTileType(position) === tileType) {
+                    result.push(position);
+                }
+            }
+        }
+
+        return result;
+    }
 }
 
 interface Event {
@@ -104,6 +129,7 @@ class Bouy {
 }
 
 interface ClientTile {
+    x: number;
     t: string;
     p?: number;
 }
@@ -123,9 +149,42 @@ class Game {
     }
 
     initialize() {
-        // TODO: create submarines for all players
-        // TODO: randomize who gets to turn and assign turn
+        let submarineId = 1;
+        let playerIdx = 0;
+        for (const player of this.players) {
 
+            let tileType;
+            if (playerIdx === 0) {
+                tileType = TileType.PLAYER1_SPAWN;
+            } else if (playerIdx === 1) {
+                tileType = TileType.PLAYER2_SPAWN;
+            } else {
+                throw new Error("Cannot support more than two players per game.");
+            }
+
+            let spawnPositions = this.map.getTilesOfType(tileType);
+
+            shuffle(spawnPositions);
+
+            for (let i = 0; i < SUBMARINES_PER_PLAYER; i++) {
+                const position = spawnPositions.pop();
+                if (!position) {
+                    throw new Error("No valid spawn location found for submarine.");
+                }
+
+                this.submarines.push(new Submarine(
+                    submarineId,
+                    player,
+                    position,
+                ));
+            }
+
+            playerIdx++;
+        }
+
+        this.currentTurn = this.players[(Math.random()*(this.players.length-1))|0];
+
+        this.sendMapToClients();
         this.sendStateToClients();
     }
 
@@ -223,22 +282,16 @@ class Game {
 
                     if (canSee) {
                         row.push({
+                            x,
                             t: 'submarine',
                             p: submarine.owner.id,
                         });
                     }
                 } else if (bouy) {
                     row.push({
+                        x,
                         t: 'bouy',
                         p: bouy.owner.id,
-                    });
-                } else if (tileType === TileType.LAND) {
-                    row.push({
-                        t: 'land',
-                    });
-                } else {
-                    row.push({
-                        t: 'water',
                     });
                 }
             }
@@ -265,8 +318,41 @@ class Game {
         this.currentTurn = this.players[nextIndex];
     }
 
+    sendMapToClients() {
+        const rows : number[][] = [];
+        for (let y = 0; y < this.map.height; y++) {
+            const row : number[] = [];
+            for (let x = 0; x < this.map.width; x++) {
+                const position = new Coordinate(x, y);
+                const tileType = this.map.getTileType(position);
+                const submarine = this.submarines.filter((submarine) => submarine.position.eq(position)).pop();
+                const bouy = this.bouys.filter((bouy) => bouy.position.eq(position)).pop();
+
+                if (tileType === TileType.LAND) {
+                    row.push(x);
+                }
+            }
+
+            rows.push(row);
+        }
+
+        for (const player of this.players) {
+            player.sendEvent({
+                eventType: 'map',
+                width: this.map.width,
+                height: this.map.height,
+                map: rows,
+            });
+        }
+    }
+
     sendStateToClients() {
-        // TODO: implement
+        for (const player of this.players) {
+            player.sendEvent({
+                eventType: 'state_update',
+                map: this.renderMapForPlayer(player),
+            });
+        }
     }
 }
 
@@ -316,6 +402,8 @@ async function runGame() {
 
         ws.on('message', function(message: string) {
             const command : Command = JSON.parse(message);
+
+            // TODO: chat support
 
             if (command.commandType === 'gameNew') {
                 const game = new Game(map);
