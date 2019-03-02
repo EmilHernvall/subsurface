@@ -73,7 +73,7 @@ interface Event {
 class Player {
     public game: Game | null = null;
 
-    constructor(private ws: WebSocket) {
+    constructor(private ws: WebSocket, public id: number) {
     }
 
     sendEvent<E extends Event>(event: E) {
@@ -101,6 +101,11 @@ class Bouy {
         public owner: Player,
         public position: Coordinate,
     ) { }
+}
+
+interface ClientTile {
+    t: string;
+    p?: number;
 }
 
 class Game {
@@ -184,8 +189,64 @@ class Game {
         this.sendStateToClients();
     }
 
-    renderMapForPlayer(player: Player) {
-        // TODO: implement
+    renderMapForPlayer(player: Player): ClientTile[][] {
+        const rows : ClientTile[][] = [];
+        for (let y = 0; y < this.map.height; y++) {
+            const row : ClientTile[] = [];
+            for (let x = 0; x < this.map.width; x++) {
+                const position = new Coordinate(x, y);
+                const tileType = this.map.getTileType(position);
+                const submarine = this.submarines.filter((submarine) => submarine.position.eq(position)).pop();
+                const bouy = this.bouys.filter((bouy) => bouy.position.eq(position)).pop();
+
+                let canSee = false;
+                if (submarine) {
+                    if (submarine.owner == player) {
+                        canSee = true;
+                    } else {
+                        const inRangeOfBouy = this.bouys.filter((bouy) => {
+                            return bouy.owner === player;
+                        }).filter((bouy) => {
+                            return bouy.position.distance(submarine.position) <= BOUY_SPOT_RADIUS
+                        }).length > 0;
+
+                        const inRangeOfSubmarine = this.submarines.filter((submarine) => {
+                            return submarine.owner === player;
+                        }).filter((mySubmarine) => {
+                            return mySubmarine.position.distance(submarine.position) <= SUBMARINE_SPOT_RADIUS
+                        }).length > 0;
+
+                        if (inRangeOfBouy || inRangeOfSubmarine) {
+                            canSee = true;
+                        }
+                    }
+
+                    if (canSee) {
+                        row.push({
+                            t: 'submarine',
+                            p: submarine.owner.id,
+                        });
+                    }
+                } else if (bouy) {
+                    row.push({
+                        t: 'bouy',
+                        p: bouy.owner.id,
+                    });
+                } else if (tileType === TileType.LAND) {
+                    row.push({
+                        t: 'land',
+                    });
+                } else {
+                    row.push({
+                        t: 'water',
+                    });
+                }
+            }
+
+            rows.push(row);
+        }
+
+        return rows;
     }
 
     nextTurn() {
@@ -245,11 +306,12 @@ async function runGame() {
 
     const wss = new WebSocket.Server({ port: 8080 });
 
+    let playerSeq = 0;
     const players : Player[] = [];
     const games : Game[] = [];
 
     wss.on('connection', function(ws: WebSocket) {
-        const player = new Player(ws);
+        const player = new Player(ws, ++playerSeq);
         players.push(player);
 
         ws.on('message', function(message: string) {
