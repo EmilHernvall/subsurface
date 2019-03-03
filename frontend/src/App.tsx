@@ -430,10 +430,10 @@ class App extends Component<any, AppState> {
                     {
                         gameId ? (
                             <button onClick={ () => this.onJoinGameClicked() }>Accept Game Invitation</button>
-                        ) : null
+                        ) : (
+                            <button onClick={ () => this.onStartGameClicked() }>Start New Game!</button>
+                        )
                     }
-
-                    <button onClick={ () => this.onStartGameClicked() }>Start New Game!</button>
                 </React.Fragment>
             );
         } else if (clientState === ClientState.MY_TURN) {

@@ -245,6 +245,16 @@ class Game {
             return submarine.position.distance(position) > BLAST_RADIUS;
         });
 
+        for (const player of this.players) {
+            const submarineCount = this.submarines.filter((submarine) => {
+                return submarine.owner.id === player.id;
+            }).length;
+
+            if (submarineCount === 0) {
+                // TODO: check for game over for all players
+            }
+        }
+
         this.nextTurn();
         this.sendStateToClients();
     }
@@ -414,7 +424,7 @@ interface MoveCommand extends BaseCommand {
 }
 
 async function runGame() {
-    const map = await Map.loadFromImage('assets/map2-lowres.png');
+    const map = await Map.loadFromImage('assets/map-lowres.png');
 
     const wss = new WebSocket.Server({ port: 8080 });
 
